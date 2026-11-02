@@ -403,6 +403,25 @@ class DFPExternalStorageFile(File):
 		if not local_file:
 			local_file = "./" + frappe.local.site + is_public + self.file_url
 
+		# DEDUP: if another File on this storage already holds identical content
+		# (same content_hash), point at its S3 object instead of re-uploading.
+		# Delete is already reference-counted (dfp_external_storage_delete_file),
+		# so sharing one S3 object across several File docs is safe.
+		if self.content_hash:
+			twin = frappe.get_all("File", filters={
+				"content_hash": self.content_hash,
+				"dfp_external_storage": self.dfp_external_storage_doc.name,
+				"dfp_external_storage_s3_key": ["is", "set"],
+				"name": ["!=", self.name],
+			}, fields=["dfp_external_storage_s3_key"], limit=1)
+			if twin:
+				self.dfp_external_storage_s3_key = twin[0].dfp_external_storage_s3_key
+				self.dfp_external_storage = self.dfp_external_storage_doc.name
+				self.file_url = f"/{DFP_EXTERNAL_STORAGE_URL_SEGMENT_FOR_FILE_LOAD}/{self.name}/{self.file_name}"
+				if os.path.exists(local_file):
+					os.remove(local_file)
+				return
+
 		try:
 			if not os.path.exists(local_file):
 				frappe.throw(_("Local file not found"))
